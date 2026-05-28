@@ -24,6 +24,7 @@ userChromeJS.downloadPlus.enableSaveAs 下载对话框启用另存为
 userChromeJS.downloadPlus.enableSaveTo 下载对话框启用保存到
 userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
 */
+// @note            20260528 修复首次打开多个窗口时可能并发调用 FlashGot.exe 扫描下载器列表的问题
 // @note            20260409 alerts 支持右下角自绘非全局 toast 提示，Aria2 RPC 添加成功与相关设置提示改为仅当前窗口显示
 // @note            20260408 Aria2 RPC 自动启动增加 RPC/进程双重检测，避免重复启动并区分自动/手动提示
 // @note            20260407 增加 aria2c 集成，支持启动 Firefox 时自动启动 Aria2 RPC，并在按钮菜单中切换
@@ -409,7 +410,7 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
     if (window.DownloadPlus) return;
 
     window.DownloadPlus = {
-        debug: true,
+        debug: false,
         // ========================================
         // 配置常量
         // ========================================
@@ -474,6 +475,12 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
         },
         set DEFAULT_MANAGER (value) {
             Services.prefs.setStringPref(this.PREF_DEFAULT_MANAGER, value);
+        },
+        _getSharedState () {
+            const hostWindow = Services.appShell?.hiddenDOMWindow
+                || Services.wm.getMostRecentWindow("navigator:browser")
+                || window;
+            return hostWindow.__downloadPlusSharedState || (hostWindow.__downloadPlusSharedState = {});
         },
         init: async function () {
             const documentURI = location.href.replace(/\?.*$/, '');
@@ -1449,7 +1456,7 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
             if (!isTrue('userChromeJS.downloadPlus.enableDoubleClickToSave')) return;
 
             $('#save').addEventListener('dblclick', (event) => {
-                const { dialog } = event.target.ownerGlobal;
+                const { dialog } = event.target.documentGlobal || event.target.ownerGlobal || event.target.ownerDocument?.defaultView || window;
                 dialog.dialogElement('unknownContentType').getButton("accept").click();
             });
         },
@@ -1858,8 +1865,9 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
                 // 获取按钮的位置信息
                 const rect = button.getBoundingClientRect();
                 // 获取窗口的宽度和高度
-                const windowWidth = target.ownerGlobal.innerWidth;
-                const windowHeight = target.ownerGlobal.innerHeight;
+                const targetWin = target.documentGlobal || target.ownerGlobal || target.ownerDocument?.defaultView || window;
+                const windowWidth = targetWin.innerWidth;
+                const windowHeight = targetWin.innerHeight;
 
                 const x = rect.left + rect.width / 2;  // 按钮的水平中心点
                 const y = rect.top + rect.height / 2;  // 按钮的垂直中心点
@@ -2062,58 +2070,75 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
                 this._log(LANG.format("log prefs read failed force rescan"), e);
             }
             if (force && this.FLASHGOT_PATH) {
-                let self = this;
-                const resultPath = handlePath('{TmpD}\\.flashgot.dm.' + Math.random().toString(36).slice(2) + '.txt');
-                const args = this.NEWER_FLASHGOT ? ["--silent", "-f", "txt", "-o", resultPath] : ["-o", resultPath];
-                if (this.debug) args.push("--debug");
-                this._log(LANG.format("log force refresh temp file"), resultPath);
-                await new Promise((resolve, reject) => {
-                    // read download managers list from flashgot.exe
-                    this.exec(this.FLASHGOT_PATH, this.NEWER_FLASHGOT ? ["--silent", "-f", "txt", "-o", resultPath] : ["-o", resultPath], {
-                        processObserver: {
-                            observe (subject, topic) {
-                                switch (topic) {
-                                    case "process-finished":
-                                        self._log(LANG.format("log flashgot process finished"));
-                                        try {
-                                            // Wait 1s after process to resolve
-                                            setTimeout(resolve, 1000);
-                                        } catch (ex) {
-                                            reject(ex);
+                const sharedState = this._getSharedState();
+                const reloadKey = this.FLASHGOT_PATH;
+                if (!sharedState.flashgotManagersReloadPromise || sharedState.flashgotManagersReloadKey !== reloadKey) {
+                    sharedState.flashgotManagersReloadKey = reloadKey;
+                    sharedState.flashgotManagersReloadPromise = (async () => {
+                        let self = this;
+                        let scannedManagers = [];
+                        const resultPath = handlePath('{TmpD}\\.flashgot.dm.' + Math.random().toString(36).slice(2) + '.txt');
+                        const args = this.NEWER_FLASHGOT ? ["--silent", "-f", "txt", "-o", resultPath] : ["-o", resultPath];
+                        if (this.debug) args.push("--debug");
+                        this._log(LANG.format("log force refresh temp file"), resultPath);
+                        await new Promise((resolve, reject) => {
+                            // read download managers list from flashgot.exe
+                            this.exec(this.FLASHGOT_PATH, args, {
+                                processObserver: {
+                                    observe (subject, topic) {
+                                        switch (topic) {
+                                            case "process-finished":
+                                                self._log(LANG.format("log flashgot process finished"));
+                                                try {
+                                                    // Wait 1s after process to resolve
+                                                    setTimeout(resolve, 1000);
+                                                } catch (ex) {
+                                                    reject(ex);
+                                                }
+                                                break;
+                                            default:
+                                                self._log(LANG.format("log flashgot process failed"), topic);
+                                                reject(topic);
+                                                break;
                                         }
-                                        break;
-                                    default:
-                                        self._log(LANG.format("log flashgot process failed"), topic);
-                                        reject(topic);
-                                        break;
-                                }
-                            }
-                        },
-                    });
-                });
-                let resultString = await readText(resultPath, FLASHGOT_OUTPUT_ENCODING);
+                                    }
+                                },
+                            });
+                        });
+                        let resultString = await readText(resultPath, FLASHGOT_OUTPUT_ENCODING);
 
-                if (resultString) {
-                    if (resultString.startsWith('[ { "available"')) {
-                        // Newer FlashGot version outputs JSON 还没做完
-                        resultString = await IOUtils.readUTF8(resultPath);
-                        // 懒得研究为啥多了些没用的字符
-                        const lastBracket = resultString.lastIndexOf(']');
-                        if (lastBracket !== -1) {
-                            resultString = resultString.slice(0, lastBracket + 1);
+                        if (resultString) {
+                            if (resultString.startsWith('[ { "available"')) {
+                                // Newer FlashGot version outputs JSON 还没做完
+                                resultString = await IOUtils.readUTF8(resultPath);
+                                // 懒得研究为啥多了些没用的字符
+                                const lastBracket = resultString.lastIndexOf(']');
+                                if (lastBracket !== -1) {
+                                    resultString = resultString.slice(0, lastBracket + 1);
+                                }
+                                this._log(LANG.format("log managers raw result"), resultString);
+                                let resultJson = JSON.parse(resultString);
+                                this.NEWER_FLASHGOT = true;
+                                scannedManagers = resultJson.filter(m => m.available).map(m => m.name);
+                            } else {
+                                this._log(LANG.format("log managers raw result"), resultString);
+                                scannedManagers = resultString.split("\n").filter(l => l.includes("|OK")).map(l => l.replace("|OK", "").replace(/\r$/, '').trim());
+                            }
+                            await IOUtils.remove(resultPath, { ignoreAbsent: true });
+                            this._log(LANG.format("log managers parsed"), scannedManagers);
+                            Services.prefs.setStringPref(this.PREF_DOWNLOAD_MANAGERS, scannedManagers.join(","));
                         }
-                        this._log(LANG.format("log managers raw result"), resultString);
-                        let resultJson = JSON.parse(resultString);
-                        this.NEWER_FLASHGOT = true;
-                        managers = resultJson.filter(m => m.available).map(m => m.name);
-                    } else {
-                        this._log(LANG.format("log managers raw result"), resultString);
-                        managers = resultString.split("\n").filter(l => l.includes("|OK")).map(l => l.replace("|OK", "").replace(/\r$/, '').trim());
-                    }
-                    await IOUtils.remove(resultPath, { ignoreAbsent: true });
-                    this._log(LANG.format("log managers parsed"), managers);
-                    Services.prefs.setStringPref(this.PREF_DOWNLOAD_MANAGERS, managers.join(","));
+                        return scannedManagers;
+                    })();
+                    const clearReloadPromise = () => {
+                        if (sharedState.flashgotManagersReloadPromise && sharedState.flashgotManagersReloadKey === reloadKey) {
+                            delete sharedState.flashgotManagersReloadPromise;
+                            delete sharedState.flashgotManagersReloadKey;
+                        }
+                    };
+                    sharedState.flashgotManagersReloadPromise.then(clearReloadPromise, clearReloadPromise);
                 }
+                managers = await sharedState.flashgotManagersReloadPromise;
             }
             this.DOWNLOAD_MANAGERS = this._mergeDownloadManagers(managers, this.getBuiltinDownloadManagers());
             if (alert) {

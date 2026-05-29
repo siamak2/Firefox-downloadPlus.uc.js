@@ -945,13 +945,15 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
             const normalizedTargetPath = this.normalizeProcessPath(this.ARIA2_PATH || this.getResolvedAria2Path());
             const script = [
                 "$ErrorActionPreference = 'Stop'",
-                "$processes = @(Get-Process -Name 'aria2c' -ErrorAction SilentlyContinue | Select-Object @{Name='ProcessId';Expression={$_.Id}}, @{Name='ExecutablePath';Expression={$_.Path}})",
+                "$encoding = New-Object System.Text.UTF8Encoding -ArgumentList $false",
+                "$processes = @(Get-WmiObject Win32_Process -Filter \"Name='aria2c.exe'\" -ErrorAction SilentlyContinue | Select-Object ProcessId, ExecutablePath)",
                 `$targetPath = ${this.toPowerShellStringLiteral(normalizedTargetPath)}`,
                 "if ($targetPath) {",
                 "    $matches = @($processes | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.ToLowerInvariant() -eq $targetPath })",
                 "    if ($matches.Count -gt 0) { $processes = $matches }",
                 "}",
-                `$processes | ConvertTo-Json -Compress | Out-File -LiteralPath ${this.toPowerShellStringLiteral(resultPath)} -Encoding utf8`,
+                "$lines = @($processes | ForEach-Object { ([string]$_.ProcessId) + \"`t\" + ([string]$_.ExecutablePath) })",
+                `[System.IO.File]::WriteAllText(${this.toPowerShellStringLiteral(resultPath)}, [string]::Join([Environment]::NewLine, $lines), $encoding)`,
             ].join("; ");
 
             this._log(LANG.format("log aria2 process check"), { powerShellPath, normalizedTargetPath });
@@ -981,14 +983,21 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
                 });
 
                 const rawResult = (await readText(resultPath)).trim();
-                if (!rawResult || rawResult === 'null') {
+                if (!rawResult) {
                     return false;
                 }
-                let processes = JSON.parse(rawResult);
-                if (!Array.isArray(processes)) {
-                    processes = [processes];
-                }
-                const matched = processes.filter(Boolean);
+                const matched = rawResult.split(/\r?\n/)
+                    .map(line => {
+                        const tabIndex = line.indexOf("\t");
+                        if (tabIndex < 0) {
+                            return null;
+                        }
+                        return {
+                            ProcessId: line.slice(0, tabIndex),
+                            ExecutablePath: line.slice(tabIndex + 1),
+                        };
+                    })
+                    .filter(process => process?.ExecutablePath);
                 if (matched.length) {
                     this._log(LANG.format("log aria2 process match"), matched);
                     return true;
@@ -2118,9 +2127,11 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
         async runNewFlashgotListScan (resultPath) {
             const script = [
                 "$ErrorActionPreference = 'Stop'",
+                "$encoding = New-Object System.Text.UTF8Encoding -ArgumentList $false",
                 `$exe = ${this.toPowerShellStringLiteral(this.FLASHGOT_PATH)}`,
                 `$out = ${this.toPowerShellStringLiteral(resultPath)}`,
-                "& $exe | Out-File -LiteralPath $out -Encoding utf8",
+                "$result = @(& $exe)",
+                "[System.IO.File]::WriteAllText($out, [string]::Join([Environment]::NewLine, $result), $encoding)",
             ].join("; ");
 
             await this.execWithPowerShell(script, { startHidden: true, silentErrors: true });
@@ -2130,11 +2141,13 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
             const outputPath = handlePath('{TmpD}\\flashgot.job.' + Math.random().toString(36).slice(2) + '.out.txt');
             const script = [
                 "$ErrorActionPreference = 'Stop'",
+                "$encoding = New-Object System.Text.UTF8Encoding -ArgumentList $false",
                 `$exe = ${this.toPowerShellStringLiteral(this.FLASHGOT_PATH)}`,
                 `$inputPath = ${this.toPowerShellStringLiteral(inputPath)}`,
                 `$outputPath = ${this.toPowerShellStringLiteral(outputPath)}`,
                 "$json = [System.IO.File]::ReadAllText($inputPath, [System.Text.Encoding]::UTF8)",
-                "$json | & $exe - | Out-File -LiteralPath $outputPath -Encoding utf8",
+                "$result = @($json | & $exe -)",
+                "[System.IO.File]::WriteAllText($outputPath, [string]::Join([Environment]::NewLine, $result), $encoding)",
             ].join("; ");
 
             try {

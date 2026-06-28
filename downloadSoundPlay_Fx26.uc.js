@@ -3,8 +3,10 @@
 // @namespace      http://space.geocities.yahoo.co.jp/gl/alice0775
 // @description    ダウンロードマネージャー用のダウンロードを監視し音を鳴らす
 // @include        main
-// @compatibility  Firefox 45
+// @async          true
+// @compatibility  Firefox 152
 // @author         Alice0775
+// @version        2026/06/28 Bug 2033673 - remove nsISound::Play
 // @version        2023/11/06 use ES module imports
 // @version        2016/03/15 hack of selection chanhe
 // @version        2015/01/15 1:00 Fixed strictmode
@@ -21,15 +23,11 @@ var downloadPlaySound = {
   // -- config --
 
   _list: null,
+  _activeAudio: new Set(),
   init: function sampleDownload_init() {
-    if (parseInt(Services.appinfo.version) >= 116) {
-      ChromeUtils.defineESModuleGetters(this, {
-        Downloads: "resource://gre/modules/Downloads.sys.mjs",
-      });
-    } else {
-      XPCOMUtils.defineLazyModuleGetter(window, "Downloads",
-        "resource://gre/modules/Downloads.jsm");
-    }
+    const { Downloads } = ChromeUtils.importESModule(
+      "resource://gre/modules/Downloads.sys.mjs"
+    );
 
     //window.removeEventListener("load", this, false);
     window.addEventListener("unload", this, false);
@@ -91,7 +89,30 @@ var downloadPlaySound = {
   play: function (aUri) {
     var sound = Components.classes["@mozilla.org/sound;1"]
       .createInstance(Components.interfaces["nsISound"]);
-    sound.play(aUri);
+    if (typeof sound.play == "function") {
+      sound.play(aUri);
+      return;
+    }
+
+    // Firefox 152+ removed nsISound.play(nsIURL).
+    let audio = new Audio(aUri.spec);
+    audio.volume = 1.0;
+    let clear = () => {
+      audio.removeEventListener("ended", clear);
+      audio.removeEventListener("error", clear);
+      this._activeAudio.delete(audio);
+      audio = null;
+    };
+    audio.addEventListener("ended", clear, { once: true });
+    audio.addEventListener("error", clear, { once: true });
+    this._activeAudio.add(audio);
+    let promise = audio.play();
+    if (promise && typeof promise.catch == "function") {
+      promise.catch(error => {
+        clear();
+        Cu.reportError(error);
+      });
+    }
   },
 
   handleEvent: function (event) {

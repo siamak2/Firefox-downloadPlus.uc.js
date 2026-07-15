@@ -2126,14 +2126,13 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
                             .get("ProfD", Ci.nsIFile).path
                     );
 
-                    // 确保路径以反斜杠结尾
-                    fullPath = fullPath.endsWith("\\") ? fullPath : fullPath + "\\";
-
                     // 获取文件名
                     const fileName = $("#locationText")?.value?.replace(invalidChars, '_') ||
                         dialog.mLauncher.suggestedFileName;
 
-                    file.initWithPath(fullPath + fileName);
+                    fullPath = PathUtils.join(fullPath,fileName);
+
+                    file.initWithPath(fullPath);
 
                     // 设置 MIME 信息
                     if (dialog.mLauncher.MIMEInfo) {

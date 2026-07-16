@@ -192,6 +192,7 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
             "log aria2 rpc wait ready": "等待 aria2 RPC 就绪",
             "log aria2 rpc retry": "重试 aria2 RPC 请求",
             "log aria2 rpc wait timeout": "等待 aria2 RPC 就绪超时",
+            "jdownloader request failed": "JDownloader not responding on %s! Make sure it's running.",
         },
         'en-US': {
             // Buttons and Labels
@@ -315,6 +316,7 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
             "log aria2 rpc wait ready": "Waiting for aria2 RPC to be ready",
             "log aria2 rpc retry": "Retrying aria2 RPC request",
             "log aria2 rpc wait timeout": "Waiting for aria2 RPC ready timed out",
+            "jdownloader request failed": "JDownloader not responding on %s! Make sure it's running.",
         },
         format (...args) {
             if (!args.length) {
@@ -546,6 +548,7 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
         // 配置常量
         // ========================================
         PREF_FLASHGOT_PATH: 'userChromeJS.downloadPlus.flashgotPath',
+        PREF_ENABLE_JDOWNLOADER: 'userChromeJS.downloadPlus.enableJdownloader',
         PREF_ARIA2_PATH: 'userChromeJS.downloadPlus.aria2Path',
         PREF_ARIA2_AUTOSTART: 'userChromeJS.downloadPlus.enableAria2AutoStart',
         PREF_ARIA2_SUCCESS_ALERT: 'userChromeJS.downloadPlus.enableAria2RpcSuccessAlert',
@@ -922,7 +925,7 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
             }
             if (isTrue('userChromeJS.downloadPlus.enableFlashgotIntergention')) {
                 console.log(LANG.format("log init flashgot integration"));
-                if (!this.FLASHGOT_PATH && !this.ARIA2_PATH) {
+                if (!this.FLASHGOT_PATH && !this.ARIA2_PATH && !isTrue(this.PREF_ENABLE_JDOWNLOADER,false)) {
                     if (Services.prefs.getBoolPref(this.PREF_ARIA2_AUTOSTART, false)) {
                         this.startAria2Web({ source: "auto" });
                     }
@@ -1083,6 +1086,9 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
             if (this.ARIA2_PATH) {
                 managers.push(this.ARIA2_CLI_MANAGER_NAME);
                 managers.push(this.ARIA2_WEB_MANAGER_NAME);
+            }
+            if(isTrue(this.PREF_ENABLE_JDOWNLOADER,false)){
+                managers.push('JDownloader');
             }
             return managers;
         },
@@ -2722,6 +2728,15 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
                     fileName,
                 });
             }
+            if(manager==='JDownloader'){
+                return this.downloadByJDownloader(uri, {
+                    description,
+                    referer: referer || gContextMenu?.browser?.currentURI?.spec || '',
+                    cookies: targetCookies,
+                    fileName,
+                    package:mBrowser?.contentTitle || gContextMenu?.linkTextStr || 'FlashGot'
+                });
+            }
             let initData, initArgs = [];
             if (this.NEWER_FLASHGOT) {
                 initData = {
@@ -2851,6 +2866,29 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
                 alerts(ex?.message || LANG.format("aria2 rpc request failed"), LANG.format("error"));
                 throw ex;
             }
+        },
+        downloadByJDownloader: function(uri, options){
+            let data = new URLSearchParams();
+            
+            if(options.referer) data.append('referer',options.referer);
+            data.append('package',options.package);
+            data.append('autostart',isTrue('userChromeJS.downloadPlus.enableJdownloaderAtuoStart',false)?'1':'0');
+            
+            // For multiple links, the following parameters should be Separated by "\n" for each link:
+            data.append('urls',uri.spec);
+            data.append('descriptions',options.description || uri.spec);
+            data.append('cookies',options.cookies || '');
+            if(options.fileName) data.append('fnames',options.fileName);
+            //
+            
+            const xhr = new XMLHttpRequest({ mozSystem: true, mozAnon: true });
+            xhr.open('POST', 'http://127.0.0.1:9666/flashgot', true);
+            xhr.setRequestHeader('Referer', 'http://localhost/');
+            xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+            xhr.onerror=error=>{
+                showBrowserNotification(LANG.format("jdownloader request failed",'http://127.0.0.1:9666/flashgot'),LANG.format("error"));
+            }
+            xhr.send(data);
         },
         _log (...args) {
             if (this.debug) {
@@ -3681,7 +3719,7 @@ userChromeJS.downloadPlus.showAllDrives 下载对话框显示所有驱动器
 .downloader-item[manager="Neat-Download-Manager"] {
     list-style-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAACqklEQVQ4T51TTUhUURg937vqNMM0Ob0RSplxoRXlqItcF6KJjI6GBEptXYTUokKrTZughW0Cw4KECKLGMjSnMKtd9AcWBGljjT/5k5aK/zPOzLv3xnvjk3HRprN4XM6799zz3fN9hBT4B/y22AIqhOQNUqKECC6dlxLzRBhQiAUsKl4GS4IR8wyZi/JXfo/kvIVADVJK1eRTQUQLEjJAjLW+PhacMDj9ox8GF21c8BoJaWxWSAFt6uuckMJY61AUpVdhaWd1EdJtR+fEdSJqyrFmw5pmRVwkML0+jbiIG1fYmA05tmwQKRCSYyoyjRiPtduyWDNV9PuPCyk6CKR6MwtwMq8e+x35eDLeg4ejj6BJDY50B47uOYLy7FL0TfXjze+3iIrIAqO0Rip/4QtIiXrdWozHcSqvATVuH5wWJ+79uI+un93gkmNnuh0ncusQGHuMDb6RLJHQSWV9vjCAPF2AC44qtw9riVVUuSvhdRbgdqgDwcnnsKfb4Xf70DMRNAQ232dEd7AkJXaZAn5PNULLw1hPrOFycTNy7R60Dd7Cu7kPqPVUbxMgwvJ2Acnhd1cjvBLG18VB5DvycbHoPLJ2uHBn+C6cGZl4Ovlsu4BZgh5VQiRQl1uL0PJ3fFsKgaDgwK59aClMirz/8xE3hm4a6aSWEBBS1luZFS6LiuLdhfgVmcFMdBaz0VloQsDrPIRLRRcM/srnq0jIhOmg04hRE4kONUNVmw6ehkIEC7NgYP4Tusa7wYhBExpKXIdR5PTiwWinEa3elQopjVuNpEneVLa3FOe8ZxBeGcG1L62Y25g34tIhpUQGyzDK1EGgdmuW0rzVyoJrbQyspjKnAqOrYxhcHAJTmLHZhP5OSevUC6YkW9n8aQ6TlEKfRNW8ORX/HCYT/zPOfwHyQ1PAXHRGwgAAAABJRU5ErkJggg==')
 }
-.downloader-item[manager="Jdownloader"] {
+.downloader-item[manager="Jdownloader"], .downloader-item[manager="JDownloader"] {
     list-style-image: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAADhElEQVQ4T12Ta2hbBRTH//fevN+5aR4djQup9GHItAsTV2GUqu2gBZlTJyqFsq44oXNitSIKUYbCsKiruA9KfVCdHVgcswNlQsSWIWQ6terWJVlTtzQxaXKbx703uS/TSIvswDkfDuf8zuE8CNwmejO9lzLoH9dotcFHutX2E4eta99+n7nw0sf8p5lMpnJ7PLHl8Hg8TlFvmVZpdYManQoGcw20h8UOUo/pcRqnZpKZ32PV47PzmS//D2kATPVkb6dxIdSjbUunDODKJCRRhr+jiF8iBI72t+Cxbh5vf35DGep2PX/38JX3tiANgMPfcf7pMWrw0QEr5i+RiMdVSMa0YFI8KgUWZopFZLoLf16K4r4ulxB66ufdf8XLS5u5hJ6m9/YNORbHjzqJ1TUKKrWEUlXB2XM0Er8p4Jl1CCyLyRd3offOGzBbtNh/5MrZxcuFQw2Azet9540P6OO9uy3IMgoWr7nww08tyK3WUM7eApdfR61SQn93MybHFCi5IgYmljmm5LDHYrEq0dTmv7jvoO4Bj8uKbKkVaaajUZUvMqjk0uAKmx1U4LKxWPgkhJvRa+gLx5HPksFaubxE2He2Lty1T30/w3hhcdrBcjSkKodqeQMck0etVIRQ5RH0SfjsRCdyiQQGw0kUU9IelmWjhMnjPWOgbU+421QwWw3Irlkh1lCvWv5P+SoUgcUXJ31wW3RoUmXx0HhSuRljd1QqlTRhoJtGNGb7hx0hGQcPabHByvhunsLKH6o6SIAkVHF40IKxITcSV3l0tnIYfT2x9M3FbLAxRLfbbWRJfdx5h+Tu2U/AYqRQqshIr4m4lVDgpox4/xU//kkwmJor4tRrdnw9mzo5Orky0QBsGoPN8TBlMM85miVyV0iE1URCqMkwiWoc6fdBKvF49fQqzGYNPnrLj2KssLye5JYzBeXH7VM20s5hUmc8bTBL2vb2CvY0m9AbsNVnIOHdr/J4ZsiFvgebIBVrqKZYcGm+OjGbb98GBAIBTYZhhru84ssD96h3mgwU8Wv9FuaiilLitUWKlC+88KSlPHLANiJkWCIaLU8dePP6sW2AoiiE0+fzyIIcVFNyQBDRIiuUGpBzBKm6DlJcslD5XE+7/tnRfudzx6YS915eqV3dBmw9RzgcJmdmZtT1HVOSJBF6vV7y+XxiJBIRN2M2O91IJ5x/57gUQUD5FyLSlbNVZqIRAAAAAElFTkSuQmCC');
 }
 .downloader-item[manager="Thunder"] {
